@@ -10,7 +10,7 @@
     <servlet-class>com.leeyaonan.mvcframework.servlet.MyDispatcherServlet</servlet-class>
     <init-param>
       <param-name>contextConfigLocation</param-name>
-      <param-value>com.leeyaonan.demo</param-value>
+      <param-value>springmvc.properties</param-value>
     </init-param>
   </servlet>
 

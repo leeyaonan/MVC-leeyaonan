@@ -38,11 +38,11 @@ public class MyDispatcherServlet extends HttpServlet {
     private Map<String, Object> ioc = new HashMap<>();
 
     // handlerMapping
-    //private Map<String,Method> handlerMapping = now HashMap<>(); // 存储url和Method之间的映射关系
+    // private Map<String,Method> handlerMapping = new HashMap<>(); // 存储url和Method之间的映射关系
     private List<Handler> handlerMapping = new ArrayList<>();
 
     @Override
-    public void init(ServletConfig config) throws ServletException {
+    public void init(ServletConfig config) {
         // 1. 加载配置文件 springmvc.properties
         String contextConfigLocation = config.getInitParameter("contextConfigLocation");
         doLoadConfig(contextConfigLocation);
