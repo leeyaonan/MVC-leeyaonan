@@ -29,6 +29,7 @@ import java.util.regex.Pattern;
  */
 public class MyDispatcherServlet extends HttpServlet {
 
+    // 存储properties配置文件信息
     private Properties properties = new Properties();
 
     // 缓存扫描到的类的全限定类名
@@ -47,29 +48,191 @@ public class MyDispatcherServlet extends HttpServlet {
         String contextConfigLocation = config.getInitParameter("contextConfigLocation");
         doLoadConfig(contextConfigLocation);
 
-
-        // 2. 扫描相关的类
+        // 2. 扫描相关的类，传入配置文件中的信息
         doScan(properties.getProperty("scanPackage"));
-
 
         // 3.1 初始化bean对象（实现ioc容器，基于注解）
         doInstance();
 
-
         // 4. 实现依赖注入
         doAutowired();
-
 
         // 5. 构造一个HandlerMapping处理器映射器，将配置好的url和method建立映射关系
         initHandlerMapping();
         System.out.println("mvc init success...");
 
-
         // 6. 等待请求进入，处理请求
     }
 
     /**
-     * 构造一个HandlerMapping处理器映射器，最关键的环节
+     * 1. 加载配置文件
+     *
+     * @param contextConfigLocation
+     */
+    private void doLoadConfig(String contextConfigLocation) {
+        // 传入的是一个路径，需要将其读取成流
+        InputStream resourceAsStream = this.getClass().getClassLoader().getResourceAsStream(contextConfigLocation);
+
+        try {
+            properties.load(resourceAsStream);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+    }
+
+    /**
+     * 2. 扫描类，是一个递归的过程
+     * 包扫描路径是相对于classpath的路径，要拿到它在磁盘中的真实位置才可以递归扫描类
+     * @param scanPackage com.leeyaonan.demo -> 借助磁盘上的文件夹（File）
+     */
+    private void doScan(String scanPackage) {
+        // 拿到classpath路径，找到包，替换路径，""即为classpath的路径
+        // 需要先将.替换为/
+        String scanPackagePath = Thread.currentThread().getContextClassLoader().getResource("").getPath() + scanPackage.replaceAll("\\.", "/");
+        File pack = new File(scanPackagePath);
+
+        File[] files = pack.listFiles();
+
+        for (File file : files) {
+            if (file.isDirectory()) { // 子package
+                // 递归扫描子包
+                doScan(scanPackage + "." + file.getName());  // com.leeyaonan.controller
+            } else if (file.getName().endsWith(".class")) {
+                // 把.class替换掉，拼接类的全限定类名，并加入到classNames中
+                String className = scanPackage + "." + file.getName().replaceAll(".class", "");
+                classNames.add(className);
+            }
+
+        }
+
+    }
+
+    /**
+     * 3. 初始化bean对象，ioc容器
+     * 基于classNames缓存的全限定类名，以及反射技术，完成对象的创建和管理
+     */
+    private void doInstance() {
+
+        if (classNames.size() == 0) return;
+
+        try {
+            for (String className : classNames) {
+                // 使用反射获取类对象
+                Class<?> aClass = Class.forName(className);
+                // 根据类上的注解区分controller，区分service（主要是为了区分service）
+                if (aClass.isAnnotationPresent(MyController.class)) {
+                    // controller的id此处不做过多处理，不取value了，就拿类的首字母小写作为id，保存到ioc中
+                    String simpleName = aClass.getSimpleName(); // 类名：eg：DemoController
+                    String lowerFirstSimpleName = lowerFirst(simpleName); // demoController
+
+                    // 实例化并放入ioc容器中
+//                    Object o = aClass.newInstance(); // class.newInstance()被弃用了，换用下面的方式创建实体
+
+                    /*
+                    * TODO：反射创建对象的推荐方法
+                    * class.getDeclaredConstructor().newInstance()
+                      getDeclaredConstructor()方法会根据他的参数对该类的构造函数进行搜索并返回对应的构造函数，
+                      * 没有参数就返回该类的无参构造函数，然后再通过newInstance进行实例化。
+                    * */
+                    Object o = aClass.getDeclaredConstructor().newInstance();
+                    ioc.put(lowerFirstSimpleName, o);
+                } else if (aClass.isAnnotationPresent(MyService.class)) {
+                    MyService annotation = aClass.getAnnotation(MyService.class);
+                    //获取注解value值
+                    String beanName = annotation.value();
+
+                    // 如果指定了id，就以指定的id作为key
+                    if (!"".equals(beanName.trim())) {
+//                        ioc.put(beanName, aClass.newInstance()); // 弃用
+                        ioc.put(beanName, aClass.getDeclaredConstructor().newInstance());
+                    } else {
+                        // 如果没有指定，就以类名首字母小写
+                        beanName = lowerFirst(aClass.getSimpleName());
+//                        ioc.put(beanName, aClass.newInstance()); // 弃用
+                        ioc.put(beanName, aClass.getDeclaredConstructor().newInstance());
+                    }
+
+
+                    // service层往往是有接口的，面向接口开发，此时再以接口名为id，放入一份对象到ioc中，便于后期根据接口类型注入
+                    Class<?>[] interfaces = aClass.getInterfaces();
+                    for (Class<?> anInterface : interfaces) {
+                        // 以接口的全限定类名作为id放入
+//                        ioc.put(anInterface.getName(), aClass.newInstance());
+                        ioc.put(anInterface.getName(), aClass.getDeclaredConstructor().newInstance());
+                    }
+                } else {
+                    // TODO：其他注解的对象注入在这里扩展
+                    continue;
+                }
+
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+
+    }
+
+    /**
+     * 4. 实现依赖注入
+     */
+    private void doAutowired() {
+        // 如果ioc容器为空，则直接返回
+        if (ioc.isEmpty()) {
+            return;
+        }
+
+        // 有对象，再进行依赖注入处理
+
+        /**
+         * TODO:在遍历HashMap的时候推荐使用如下方式，尤其是针对容量较大的HashMap时
+         * for(Map.Entry<String, String> entry: map.entrySet())
+         * {
+         *      System.out.println("Key: "+ entry.getKey()+ " Value: "+entry.getValue());
+         * }
+         */
+
+        // 遍历ioc中所有对象，查看对象中的字段，是否有@MyAutowired注解，如果有则需要维护依赖注入关系
+        for (Map.Entry<String, Object> entry : ioc.entrySet()) {
+            // 获取bean对象中的字段信息
+            Field[] declaredFields = entry.getValue().getClass().getDeclaredFields();
+            // 遍历判断处理
+            //  @MyAutowired  private IDemoService demoService;
+            for (Field declaredField : declaredFields) {
+                // case1：没有该注解，直接跳过
+                if (!declaredField.isAnnotationPresent(MyAutowired.class)) {
+                    continue;
+                }
+
+
+                // case2：有该注解 -> 判断是否有value
+                MyAutowired annotation = declaredField.getAnnotation(MyAutowired.class);
+                String beanName = annotation.value();  // 需要注入的bean的id
+                if ("".equals(beanName.trim())) {
+                    // 没有配置具体的bean id（即value为默认值""），那就需要根据当前字段类型注入（接口注入）  IDemoService
+                    beanName = declaredField.getType().getName();
+                }
+
+                // 开启赋值
+                declaredField.setAccessible(true);
+
+                try {
+                    declaredField.set(entry.getValue(), ioc.get(beanName));
+                } catch (IllegalAccessException e) {
+                    e.printStackTrace();
+                }
+
+            }
+
+
+        }
+
+
+    }
+
+    /**
+     * 5. 构造一个HandlerMapping处理器映射器，最关键的环节
      * 将配置好的url和method建立映射关系
      * 目的：将url和method建立关联
      */
@@ -139,153 +302,16 @@ public class MyDispatcherServlet extends HttpServlet {
     }
 
     /**
-     * 实现依赖注入
+     * 将类名首字母小写
+     * @param str
+     * @return
      */
-    private void doAutowired() {
-        if (ioc.isEmpty()) {
-            return;
-        }
-
-        // 有对象，再进行依赖注入处理
-
-        // 遍历ioc中所有对象，查看对象中的字段，是否有@MyAutowired注解，如果有需要维护依赖注入关系
-        for (Map.Entry<String, Object> entry : ioc.entrySet()) {
-            // 获取bean对象中的字段信息
-            Field[] declaredFields = entry.getValue().getClass().getDeclaredFields();
-            // 遍历判断处理
-            //  @MyAutowired  private IDemoService demoService;
-            for (Field declaredField : declaredFields) {
-                if (!declaredField.isAnnotationPresent(MyAutowired.class)) {
-                    continue;
-                }
-
-
-                // 有该注解
-                MyAutowired annotation = declaredField.getAnnotation(MyAutowired.class);
-                String beanName = annotation.value();  // 需要注入的bean的id
-                if ("".equals(beanName.trim())) {
-                    // 没有配置具体的bean id，那就需要根据当前字段类型注入（接口注入）  IDemoService
-                    beanName = declaredField.getType().getName();
-                }
-
-                // 开启赋值
-                declaredField.setAccessible(true);
-
-                try {
-                    declaredField.set(entry.getValue(), ioc.get(beanName));
-                } catch (IllegalAccessException e) {
-                    e.printStackTrace();
-                }
-
-            }
-
-
-        }
-
-
-    }
-
-    /**
-     * 初始化bean对象
-     */
-    private void doInstance() {
-
-        if (classNames.size() == 0) return;
-
-        try {
-
-            // com.leeyaonan.controller.DemoController
-            for (String className : classNames) {
-                // 反射
-                Class<?> aClass = Class.forName(className);
-                // 区分controller，区分service'
-                if (aClass.isAnnotationPresent(MyController.class)) {
-                    // controller的id此处不做过多处理，不取value了，就拿类的首字母小写作为id，保存到ioc中
-                    String simpleName = aClass.getSimpleName();// DemoController
-                    String lowerFirstSimpleName = lowerFirst(simpleName); // demoController
-                    // 实例化并放入ioc容器中
-                    Object o = aClass.newInstance();
-                    ioc.put(lowerFirstSimpleName, o);
-                } else if (aClass.isAnnotationPresent(MyService.class)) {
-                    MyService annotation = aClass.getAnnotation(MyService.class);
-                    //获取注解value值
-                    String beanName = annotation.value();
-
-                    // 如果指定了id，就以指定的为准
-                    if (!"".equals(beanName.trim())) {
-                        ioc.put(beanName, aClass.newInstance());
-                    } else {
-                        // 如果没有指定，就以类名首字母小写
-                        beanName = lowerFirst(aClass.getSimpleName());
-                        ioc.put(beanName, aClass.newInstance());
-                    }
-
-
-                    // service层往往是有接口的，面向接口开发，此时再以接口名为id，放入一份对象到ioc中，便于后期根据接口类型注入
-                    Class<?>[] interfaces = aClass.getInterfaces();
-                    for (Class<?> anInterface : interfaces) {
-                        // 以接口的全限定类名作为id放入
-                        ioc.put(anInterface.getName(), aClass.newInstance());
-                    }
-                }
-
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-
-
-    }
-
     private String lowerFirst(String str) {
         char[] chars = str.toCharArray();
         if ('A' <= chars[0] && chars[0] <= 'Z') {
             chars[0] += 32;
         }
         return String.valueOf(chars);
-    }
-
-    /**
-     * 扫描类，是一个递归的过程
-     *
-     * @param scanPackage com.leeyaonan.demo -> 借助磁盘上的文件夹（File）
-     */
-    private void doScan(String scanPackage) {
-        // 拿到classpath路径，找到包，替换路径，""即为classpath的路径
-        String scanPackagePath = Thread.currentThread().getContextClassLoader().getResource("").getPath() + scanPackage.replaceAll("\\.", "/");
-        File pack = new File(scanPackagePath);
-
-        File[] files = pack.listFiles();
-
-        for (File file : files) {
-            if (file.isDirectory()) { // 子package
-                // 递归
-                doScan(scanPackage + "." + file.getName());  // com.leeyaonan.controller
-            } else if (file.getName().endsWith(".class")) {
-                String className = scanPackage + "." + file.getName().replaceAll(".class", "");
-                classNames.add(className);
-            }
-
-        }
-
-
-    }
-
-    /**
-     * 加载配置文件
-     *
-     * @param contextConfigLocation
-     */
-    private void doLoadConfig(String contextConfigLocation) {
-        // 传入的是一个路径，需要将其读取成流
-        InputStream resourceAsStream = this.getClass().getClassLoader().getResourceAsStream(contextConfigLocation);
-
-        try {
-            properties.load(resourceAsStream);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-
     }
 
     @Override
